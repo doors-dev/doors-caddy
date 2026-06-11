@@ -1,3 +1,5 @@
+> Work in progress — not yet ready for production use.
+
 # doors-caddy
 
 Caddy v2 upstream source for zero-interruption rolling deployments and load
