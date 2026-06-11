@@ -19,12 +19,12 @@ var ErrorParse = errors.New("ip parse error")
 
 var aad = []byte("doors-pod-ip-v1")
 
-func NewTokenCipher(key string) (TokenCipher, error) {
-	decodedKey, err := base64.StdEncoding.DecodeString(key)
+func NewTokenCipher(secret string) (TokenCipher, error) {
+	decodedKey, err := base64.StdEncoding.DecodeString(secret)
 	if err != nil {
 		return tokenCipher{}, err
 	}
-	block, err := aes.NewCipher(decodedKey) 
+	block, err := aes.NewCipher(decodedKey)
 	if err != nil {
 		return tokenCipher{}, err
 	}

@@ -50,7 +50,7 @@ func (m *Module) Provision(ctx caddy.Context) (err error) {
 			return fmt.Errorf("cookie_name is required when using more than 1 upstream")
 		}
 	}
-	m.Upstreams = make([]Upstream, 0, len(m.Upstreams))
+	m.upstreams = make([]*reverseproxy.Upstream, 0, len(m.Upstreams))
 	for i := range m.Upstreams {
 		upstream := &m.Upstreams[i]
 		if upstream.CIDR == "" {
