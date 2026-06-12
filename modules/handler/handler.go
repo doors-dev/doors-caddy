@@ -13,7 +13,7 @@ import (
 )
 
 var errorDecode = errors.New("failed to decode dynamic upstream: stale client, wrong configuration or attack")
-var errorCIDR = errors.New("upstream failed CIDR match: stale client, wrong configureation or attack")
+var errorCIDR = errors.New("upstream failed CIDR match: stale client, wrong configuration or attack")
 
 func (m Module) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	token, ok := tokenFromPath(r.URL.Path)

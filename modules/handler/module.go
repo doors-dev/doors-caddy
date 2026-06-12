@@ -8,6 +8,7 @@ import (
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
+	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp/reverseproxy"
 	"github.com/doors-dev/doors-caddy/common"
 	"go.uber.org/zap"
@@ -82,7 +83,11 @@ func (m *Module) Provision(ctx caddy.Context) (err error) {
 	return err
 }
 
-var _ caddyfile.Unmarshaler = (*Module)(nil)
+var (
+	_ caddy.Provisioner           = (*Module)(nil)
+	_ caddyhttp.MiddlewareHandler = (*Module)(nil)
+	_ caddyfile.Unmarshaler       = (*Module)(nil)
+)
 
 func (m *Module) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	d.Next()
