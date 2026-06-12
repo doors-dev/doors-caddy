@@ -154,6 +154,17 @@ openssl rand -base64 32
 The same AES key must be set in both the Doors app (`SECRET` env) and the
 Caddy config (`secret` directive).
 
+## Build
+
+Build a custom Caddy binary with both modules using [xcaddy](https://github.com/caddyserver/xcaddy):
+
+```sh
+xcaddy build --with github.com/doors-dev/doors-caddy/caddy
+```
+
+This imports the `caddy/` package which registers `doors_handler` and
+`doors_upstreams`.
+
 ## Configuration
 
 ### Caddyfile
