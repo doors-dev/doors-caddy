@@ -1,4 +1,4 @@
-package caddy
+package plugin
 
 import (
 	"github.com/doors-dev/doors-caddy/modules/handler"

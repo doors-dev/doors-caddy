@@ -159,10 +159,10 @@ Caddy config (`secret` directive).
 Build a custom Caddy binary with both modules using [xcaddy](https://github.com/caddyserver/xcaddy):
 
 ```sh
-xcaddy build --with github.com/doors-dev/doors-caddy/caddy
+xcaddy build --with github.com/doors-dev/doors-caddy/plugin
 ```
 
-This imports the `caddy/` package which registers `doors_handler` and
+This imports the `plugin/` package which registers `doors_handler` and
 `doors_upstreams`.
 
 ## Configuration
@@ -258,7 +258,7 @@ upstreams from the request context populated by `doors_handler`.
 |---------|------|
 | `doorscaddy` (root) | Public API imported by Doors apps |
 | `common/` | Shared token cipher and request‑context helpers |
-| `caddy/` | Registration entry point for both Caddy modules |
+| `plugin/` | Registration entry point for both Caddy modules |
 | `modules/handler/` | Caddy module `http.handlers.doors_handler` |
 | `modules/upstream/` | Caddy module `http.reverse_proxy.upstreams.doors_upstreams` |
 
