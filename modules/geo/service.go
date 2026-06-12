@@ -36,6 +36,12 @@ type geoService struct {
 }
 
 func (m *geoService) Launch() {
+	m.Logger.Info("geo service: launching background updaters",
+		zap.String("ipv4_url", m.IPv4URL),
+		zap.String("ipv6_url", m.IPv6URL),
+		zap.Duration("interval", m.Interval),
+		zap.Duration("timeout", m.Timeout),
+	)
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
 	go updater{
@@ -61,17 +67,37 @@ func (g *geoService) Lookup(ip netip.Addr) (string, bool) {
 	var table *bart.Table[string]
 	if ip.Is4() {
 		table = g.v4.Load()
+		g.Logger.Debug("geo service: Lookup using IPv4 table",
+			zap.String("ip", ip.String()),
+			zap.Bool("table_loaded", table != nil),
+		)
 	}
 	if ip.Is6() {
 		table = g.v6.Load()
+		g.Logger.Debug("geo service: Lookup using IPv6 table",
+			zap.String("ip", ip.String()),
+			zap.Bool("table_loaded", table != nil),
+		)
 	}
 	if table == nil {
+		g.Logger.Warn("geo service: Lookup table is nil, database not yet loaded",
+			zap.String("ip", ip.String()),
+			zap.Bool("is_v4", ip.Is4()),
+			zap.Bool("is_v6", ip.Is6()),
+		)
 		return "", false
 	}
-	return table.Lookup(ip)
+	country, found := table.Lookup(ip)
+	g.Logger.Debug("geo service: Lookup result",
+		zap.String("ip", ip.String()),
+		zap.String("country", country),
+		zap.Bool("found", found),
+	)
+	return country, found
 }
 
 func (m *geoService) Cancel() {
+	m.Logger.Info("geo service: cancelling background updaters")
 	m.cancel()
 }
 
@@ -92,18 +118,38 @@ type updater struct {
 }
 
 func (u updater) Run() {
+	u.Logger.Info("geo updater: starting",
+		zap.String("url", u.Url),
+		zap.Duration("interval", u.Interval),
+		zap.Duration("timeout", u.Timeout),
+	)
 	for {
 		err := u.update()
 		var delay time.Duration
 		if err != nil {
-			u.Logger.Error("IP database update error", zap.Error(err))
+			u.Logger.Error("geo updater: IP database update error",
+				zap.String("url", u.Url),
+				zap.Error(err),
+			)
 			delay = u.retry()
+			u.Logger.Warn("geo updater: retrying after delay",
+				zap.String("url", u.Url),
+				zap.Duration("delay", delay),
+				zap.Int("consecutive_failures", u.failures),
+			)
 		} else {
 			delay = u.wait()
+			u.Logger.Info("geo updater: update succeeded, waiting for next cycle",
+				zap.String("url", u.Url),
+				zap.Duration("delay", delay),
+			)
 		}
 		select {
 		case <-time.After(delay):
 		case <-u.Ctx.Done():
+			u.Logger.Info("geo updater: context cancelled, stopping",
+				zap.String("url", u.Url),
+			)
 			return
 		}
 	}
@@ -131,6 +177,11 @@ func (u *updater) retry() time.Duration {
 }
 
 func (u *updater) update() error {
+	u.Logger.Debug("geo updater: downloading database",
+		zap.String("url", u.Url),
+		zap.String("etag", u.meta.ETag),
+		zap.String("last_modified", u.meta.LastModified),
+	)
 	req, err := http.NewRequestWithContext(u.Ctx, http.MethodGet, u.Url, nil)
 	if err != nil {
 		panic(err)
@@ -145,26 +196,67 @@ func (u *updater) update() error {
 	client := &http.Client{Timeout: u.Timeout}
 	resp, err := client.Do(req)
 	if err != nil {
+		u.Logger.Error("geo updater: HTTP request failed",
+			zap.String("url", u.Url),
+			zap.Error(err),
+		)
 		return err
 	}
 	defer resp.Body.Close()
+
+	u.Logger.Debug("geo updater: HTTP response received",
+		zap.String("url", u.Url),
+		zap.Int("status", resp.StatusCode),
+		zap.String("status_text", resp.Status),
+		zap.Int64("content_length", resp.ContentLength),
+		zap.String("etag", resp.Header.Get("ETag")),
+		zap.String("last_modified", resp.Header.Get("Last-Modified")),
+	)
+
 	if resp.StatusCode == http.StatusNotModified {
+		u.Logger.Debug("geo updater: database not modified (304)",
+			zap.String("url", u.Url),
+		)
 		return nil
 	}
 	if resp.StatusCode != http.StatusOK {
+		u.Logger.Error("geo updater: unexpected HTTP status",
+			zap.String("url", u.Url),
+			zap.Int("status", resp.StatusCode),
+			zap.String("status_text", resp.Status),
+		)
 		return common.ErrorsJoin(errorRequest, fmt.Errorf("HTTP %s", resp.Status))
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize))
 	if err != nil {
+		u.Logger.Error("geo updater: failed to read response body",
+			zap.String("url", u.Url),
+			zap.Error(err),
+		)
 		return common.ErrorsJoin(errorRequest, err)
 	}
+	u.Logger.Debug("geo updater: database downloaded",
+		zap.String("url", u.Url),
+		zap.Int("size_bytes", len(data)),
+	)
+
 	table := new(bart.Table[string])
 	if err := parseArchive(data, table); err != nil {
+		u.Logger.Error("geo updater: failed to parse archive",
+			zap.String("url", u.Url),
+			zap.Error(err),
+		)
 		return common.ErrorsJoin(errorParse, err)
 	}
 	u.Cell.Store(table)
 	u.meta.ETag = resp.Header.Get("ETag")
 	u.meta.LastModified = resp.Header.Get("Last-Modified")
+
+	u.Logger.Info("geo updater: database loaded successfully",
+		zap.String("url", u.Url),
+		zap.Int("entries", table.Size()),
+	)
+
 	return nil
 }
 

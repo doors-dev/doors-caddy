@@ -125,6 +125,20 @@ func (m *Module) Provision(ctx caddy.Context) (err error) {
 		m.DownloadTimeout = caddy.Duration(30 * time.Second)
 	}
 	m.logger = ctx.Logger(m)
+	m.logger.Info("geo module: provisioning",
+		zap.String("ipv4_url", m.IPv4URL),
+		zap.String("ipv6_url", m.IPv6URL),
+		zap.Duration("update_interval", time.Duration(m.UpdateInterval)),
+		zap.Duration("download_timeout", time.Duration(m.DownloadTimeout)),
+		zap.Int("redirect_domains", len(m.Redirects)),
+		zap.Int("lookup_entries", len(m.lookup)),
+	)
+	for country, domain := range m.lookup {
+		m.logger.Debug("geo module: redirect mapping",
+			zap.String("country", country),
+			zap.String("domain", domain),
+		)
+	}
 	m.service = &geoService{
 		IPv4URL:  m.IPv4URL,
 		IPv6URL:  m.IPv6URL,
