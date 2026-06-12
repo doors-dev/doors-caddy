@@ -31,7 +31,7 @@ func (m Module) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp
 func (m *Module) setSystemUpstreams(token string, r *http.Request) bool {
 	ip, err := m.cipher.Decode(token)
 	if err != nil {
-		m.logger.Warn(errorCIDR.Error(),
+		m.logger.Warn(errorDecode.Error(),
 			zap.Error(err),
 			zap.String("method", r.Method),
 			zap.String("path", r.URL.Path),

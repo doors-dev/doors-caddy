@@ -2,8 +2,28 @@
 
 # doors-caddy
 
-Caddy v2 upstream source for zero-interruption rolling deployments and load
-balancing of [Doors](https://github.com/doors-dev/doors) apps.
+Caddy v2 modules for zero-interruption rolling deployments and load balancing
+of [Doors](https://github.com/doors-dev/doors) apps.
+
+## Architecture
+
+This package provides two Caddy modules that work together:
+
+| Directive | Module ID | Role |
+|---|---|---|
+| `doors_handler` | `http.handlers.doors_handler` | HTTP middleware — decrypts pod-IP tokens, stores upstreams in request context |
+| `doors_upstreams` | `http.reverse_proxy.upstreams.doors_upstreams` | Reverse proxy upstream source — reads upstreams from request context |
+
+They communicate through Caddy's request context via `common.SetUpstreams` /
+`common.GetUpstreams`. Both must appear in the right order:
+
+```
+Request → doors_handler → sets upstreams in context → reverse_proxy + doors_upstreams → proxies to upstream
+```
+
+`doors_handler` carries all configuration (secret, cookie name, upstream blocks).
+`doors_upstreams` is configuration‑free — it only reads what `doors_handler`
+wrote.
 
 ## Features
 
@@ -13,6 +33,9 @@ balancing of [Doors](https://github.com/doors-dev/doors) apps.
   cookie-based server affinity.
 - **Pod-level routing** — Doors system requests (`/~/*`) reach the exact
   pod that owns the session, even mid-rollout.
+- **Invalid token handling** — system requests with unrecognised tokens
+  receive `410 Gone`. The Doors client triggers a full reload, landing on
+  the fresh deployment.
 - **Static Caddy config** — hosts resolve to fresh deployments
   automatically; no config changes needed during a rollout.
 
@@ -39,18 +62,24 @@ draining pods from past rollouts.
 ### Request routing
 
 **System requests** (`/~/{token}/...`). The token is an encrypted pod IP.
-The plugin decrypts it, matches the IP against upstream CIDRs, and dials
-the pod directly. This guarantees system calls always reach the instance
-that owns the session — whether the pod is fresh or draining.
+`doors_handler` decrypts it, matches the IP against upstream CIDRs, and
+stores an upstream pointing to the pod IP directly, which
+`doors_upstreams` then reads. This guarantees system calls always reach
+the instance that owns the session — whether the pod is fresh or
+draining. If the token fails to decrypt or matches no CIDR,
+`doors_handler` returns `410 Gone` and the Doors client performs a full
+page reload.
 
-**Normal requests, single upstream**. Always route to the host. The host
-resolves to the fresh deployment.
+**Normal requests, single upstream**. `doors_handler` always stores the
+host-based upstream. `doors_upstreams` reads it and the reverse proxy
+routes to the host, which resolves to the fresh deployment.
 
-**Normal requests, multiple upstreams**. Read the `upstream` cookie
-(encrypted pod IP, set by Doors via `ServerIDCookieName`). Match the IP
-against upstream CIDRs to keep the session on the same server. No cookie
-means a new session — Caddy's load-balancing policy selects among all
-upstreams.
+**Normal requests, multiple upstreams**. `doors_handler` reads the
+`upstream` cookie (encrypted pod IP, set by Doors via
+`ServerIDCookieName`). It matches the IP against upstream CIDRs to store
+the matching server's host, keeping the session on the same server. No
+cookie means a new session — all upstream hosts are stored and Caddy's
+load-balancing policy selects one.
 
 ### Doors integration
 
@@ -131,16 +160,17 @@ Caddy config (`secret` directive).
 
 ```
 example.com {
-    reverse_proxy {
-        dynamic_upstreams doors_upstream {
-            secret <base64-aes-key>
-            cookie_name upstream
-            upstream {
-                pod_cidr 10.0.0.0/24
-                host svc.namespace.svc.cluster.local
-                upstream_port 8080
-            }
+    doors_handler {
+        secret <base64-aes-key>
+        cookie_name upstream
+        upstream {
+            pod_cidr 10.0.0.0/24
+            host svc.namespace.svc.cluster.local
+            upstream_port 8080
         }
+    }
+    reverse_proxy {
+        dynamic_upstreams doors_upstreams
     }
 }
 ```
@@ -153,7 +183,7 @@ example.com {
   - `host` — DNS name resolving to the fresh deployment (required).
   - `upstream_port` — Port the Doors app listens on (required).
 
-For horizontal scaling, add more `upstream` blocks:
+For horizontal scaling, add more `upstream` blocks in `doors_handler`:
 
 ```
 upstream {
@@ -163,22 +193,44 @@ upstream {
 }
 ```
 
+`doors_upstreams` inside `reverse_proxy` takes no arguments — it reads
+upstreams from the request context populated by `doors_handler`.
+
 ### JSON
 
 ```json
 {
-    "handler": "reverse_proxy",
-    "upstreams": {
-        "source": "doors_upstream",
-        "secret": "<base64-aes-key>",
-        "cookie_name": "upstream",
-        "upstreams": [
-            {
-                "cidr": "10.0.0.0/24",
-                "host": "svc.namespace.svc.cluster.local",
-                "port": 8080
+    "apps": {
+        "http": {
+            "servers": {
+                "example": {
+                    "routes": [
+                        {
+                            "handle": [
+                                {
+                                    "handler": "doors_handler",
+                                    "secret": "<base64-aes-key>",
+                                    "cookie_name": "upstream",
+                                    "upstreams": [
+                                        {
+                                            "cidr": "10.0.0.0/24",
+                                            "host": "svc.namespace.svc.cluster.local",
+                                            "port": 8080
+                                        }
+                                    ]
+                                },
+                                {
+                                    "handler": "reverse_proxy",
+                                    "upstreams": {
+                                        "source": "doors_upstreams"
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                }
             }
-        ]
+        }
     }
 }
 ```
@@ -189,13 +241,15 @@ upstream {
 - **Encryption**: AES-GCM with random nonce, AAD `doors-pod-ip-v1`
 - **Encoding**: base64 raw-URL (no padding)
 
-## Packages
+## Modules
 
 | Package | Role |
 |---------|------|
 | `doorscaddy` (root) | Public API imported by Doors apps |
-| `lib/` | Internal AES-GCM cipher implementation |
-| `upstream/` | Caddy v2 module (`http.reverse_proxy.upstreams.doors_upstream`) |
+| `common/` | Shared token cipher and request‑context helpers |
+| `caddy/` | Registration entry point for both Caddy modules |
+| `modules/handler/` | Caddy module `http.handlers.doors_handler` |
+| `modules/upstream/` | Caddy module `http.reverse_proxy.upstreams.doors_upstreams` |
 
 ## License
 
