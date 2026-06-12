@@ -20,8 +20,9 @@ and geo-IP redirects.
 - **Static Caddy config** — hosts resolve to fresh deployments
   automatically; no config changes needed during a rollout.
 - **Geo-IP redirects** — visitor IP matched against auto-updating country
-  IP databases; requests from configured countries redirect to the matching
-  domain. Passes through if no match or database not ready.
+  IP databases; GET requests from configured countries redirect to the
+  matching domain. System paths (`/~/*`) and non-GET requests pass through.
+  Passes through if no match or database not ready.
 
 ## Architecture
 
@@ -32,7 +33,8 @@ This package provides three Caddy modules:
 - **`doors_upstreams`** (`http.reverse_proxy.upstreams.doors_upstreams`) —
   Reverse proxy upstream source that reads upstreams from the request context.
 - **`doors_geo`** (`http.handlers.doors_geo`) — Geo-IP middleware that looks
-  up visitor country by IP and redirects (307) if configured.
+  up visitor country by IP and redirects (307) if configured. System paths
+  (`/~/*`) and non-GET requests pass through unchanged.
 
 `doors_handler` and `doors_upstreams` communicate through Caddy's request context
 via `common.SetUpstreams` / `common.GetUpstreams`. They must appear in the right
@@ -281,12 +283,14 @@ successful download, so lookups never block.
 
 On each request:
 
-1. Resolve the client IP (respects Caddy's
+1. System paths (`/~/*`) and non-GET requests pass through immediately —
+   no redirect, no country lookup.
+2. Resolve the client IP (respects Caddy's
    [`trusted_proxies`](https://caddyserver.com/docs/caddyfile/options#trusted-proxies)).
-2. Look up the IP in the current database to get an
+3. Look up the IP in the current database to get an
    [ISO 3166-1 alpha-2](https://en.wikipedia.org/wiki/ISO_3166-1_alpha-2)
    country code.
-3. Look up the country code in the redirect map configured in the Caddyfile.
+4. Look up the country code in the redirect map configured in the Caddyfile.
    If found and the current host does not already match, issue a
    `307 Temporary Redirect` to `https://<target-domain>/<path>`.
 

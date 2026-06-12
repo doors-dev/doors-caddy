@@ -17,14 +17,18 @@ func (m Module) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp
 		zap.String("remote_addr", r.RemoteAddr),
 		zap.String("method", r.Method),
 	)
-
-	if strings.HasPrefix(r.URL.Path, "/.well-known/acme-challenge/") {
-		m.logger.Debug("geo handler: skipping ACME challenge path",
+	if strings.HasPrefix(r.URL.Path, "/~/") {
+		m.logger.Debug("geo handler: skipping system path",
 			zap.String("path", r.URL.Path),
 		)
 		return next.ServeHTTP(w, r)
 	}
-
+	if r.Method != http.MethodGet {
+		m.logger.Debug("geo handler: skipping non-GET request",
+			zap.String("method", r.Method),
+		)
+		return next.ServeHTTP(w, r)
+	}
 	ip, err := clientIP(r)
 	if err != nil {
 		m.logger.Warn("geo handler: failed to get client IP, passing through",
@@ -38,7 +42,6 @@ func (m Module) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp
 		zap.Bool("is_v4", ip.Is4()),
 		zap.Bool("is_v6", ip.Is6()),
 	)
-
 	country, found := m.service.Lookup(ip)
 	if !found {
 		m.logger.Warn("geo handler: country not found for IP, database may not be ready, passing through",
@@ -50,7 +53,6 @@ func (m Module) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp
 		zap.String("ip", ip.String()),
 		zap.String("country", country),
 	)
-
 	domain, exists := m.lookup[country]
 	if !exists {
 		m.logger.Warn("geo handler: no redirect configured for country, passing through",
@@ -64,7 +66,6 @@ func (m Module) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp
 		zap.String("target_domain", domain),
 		zap.String("request_host", r.Host),
 	)
-
 	if domain == r.Host {
 		m.logger.Debug("geo handler: already on target domain, passing through",
 			zap.String("host", r.Host),
@@ -72,7 +73,6 @@ func (m Module) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp
 		)
 		return next.ServeHTTP(w, r)
 	}
-
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
