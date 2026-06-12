@@ -2,24 +2,30 @@
 
 # doors-caddy
 
-Caddy v2 modules for zero-interruption rolling deployments and load balancing
-of [Doors](https://github.com/doors-dev/doors) apps.
+Caddy v2 modules for [Doors](https://github.com/doors-dev/doors) apps:
+zero-interruption rolling deployments with cookie-based load balancing,
+and geo-IP redirects.
 
 ## Architecture
 
-This package provides two Caddy modules that work together:
+This package provides three Caddy modules:
 
-| Directive | Module ID | Role |
-|---|---|---|
-| `doors_handler` | `http.handlers.doors_handler` | HTTP middleware — decrypts pod-IP tokens, stores upstreams in request context |
-| `doors_upstreams` | `http.reverse_proxy.upstreams.doors_upstreams` | Reverse proxy upstream source — reads upstreams from request context |
+- **`doors_handler`** (`http.handlers.doors_handler`) — HTTP middleware that
+  decrypts pod-IP tokens and stores upstreams in the request context.
+- **`doors_upstreams`** (`http.reverse_proxy.upstreams.doors_upstreams`) —
+  Reverse proxy upstream source that reads upstreams from the request context.
+- **`doors_geo`** (`http.handlers.doors_geo`) — Geo-IP middleware that looks
+  up visitor country by IP and redirects (307) if configured.
 
-They communicate through Caddy's request context via `common.SetUpstreams` /
-`common.GetUpstreams`. Both must appear in the right order:
+`doors_handler` and `doors_upstreams` communicate through Caddy's request context
+via `common.SetUpstreams` / `common.GetUpstreams`. They must appear in the right
+order:
 
 ```
 Request → doors_handler → sets upstreams in context → reverse_proxy + doors_upstreams → proxies to upstream
 ```
+
+`doors_geo` runs independently — it needs no other Doors modules.
 
 `doors_handler` carries all configuration (secret, cookie name, upstream blocks).
 `doors_upstreams` is configuration‑free — it only reads what `doors_handler`
@@ -38,6 +44,9 @@ wrote.
   the fresh deployment.
 - **Static Caddy config** — hosts resolve to fresh deployments
   automatically; no config changes needed during a rollout.
+- **Geo-IP redirects** — visitor IP matched against auto-updating country
+  IP databases; requests from configured countries redirect to the matching
+  domain. Passes through if no match or database not ready.
 
 ## How it works
 
@@ -134,6 +143,55 @@ When `app.Drain` is called:
   draining pod by IP.
 - The callback fires when the instance count reaches zero.
 
+## Geo-IP redirects
+
+`doors_geo` downloads regularly-updated IP-address-to-country databases in the
+background and issues 307 (Temporary Redirect) responses when the visitor's
+country matches a configured domain.
+
+### Database updates
+
+Two goroutines run in the background — one for IPv4, one for IPv6. Each
+periodically fetches a gzipped tar archive of `.zone` files (CIDR lists per
+country) from [ipdeny.com](https://www.ipdeny.com). The CIDR → country
+mapping is loaded into a lock-free routing table ([bart](https://github.com/gaissmai/bart))
+and swapped in atomically on each successful download, so lookups never block.
+
+- **Update interval**: 24 h by default, configurable with `update_interval`.
+- **Conditional requests**: `ETag` and `If-Modified-Since` avoid re‑fetching
+  unchanged data (HTTP 304).
+- **Exponential backoff**: on failure, retries start at 30 s and cap at 1 h,
+  with jitter (±10 %) added to every wait.
+- **Download timeout**: HTTP client timeout, 30 s default (`download_timeout`).
+- **Max body size**: response body is capped at 8 MiB.
+
+### Request handling
+
+On each request:
+
+1. Resolve the client IP (respects Caddy's
+   [`trusted_proxies`](https://caddyserver.com/docs/caddyfile/options#trusted-proxies)).
+2. Look up the IP in the current database to get an
+   [ISO 3166-1 alpha-2](https://en.wikipedia.org/wiki/ISO_3166-1_alpha-2)
+   country code.
+3. Look up the country code in the redirect map configured in the Caddyfile.
+   If found and the current host does not already match, issue a
+   `307 Temporary Redirect` to `https://<target-domain>/<path>`.
+
+If the visitor is already on the target domain (the current host matches
+the redirect domain), no redirect is performed — the request passes through,
+preventing redirect loops. Similarly, if the database is not yet loaded,
+the country code is unknown, or there is no redirect configured for that
+country, the request passes through to the next handler unchanged.
+
+### Coverage
+
+All country codes that should redirect must be **explicitly** listed.
+There is no catch-all — visitors from uncovered countries continue to the
+next handler. Country codes must not overlap across domains (behaviour is
+undefined). For correct routing every country you care about must appear
+in exactly one domain block.
+
 ## Rolling deployment
 
 1. Pod `10.0.0.1` running on server `svc.ns.svc.local`. Caddy routes all
@@ -162,8 +220,8 @@ Build a custom Caddy binary with both modules using [xcaddy](https://github.com/
 xcaddy build --with github.com/doors-dev/doors-caddy/plugin
 ```
 
-This imports the `plugin/` package which registers `doors_handler` and
-`doors_upstreams`.
+This imports the `plugin/` package which registers `doors_geo`, `doors_handler`,
+and `doors_upstreams`.
 
 ## Configuration
 
@@ -207,6 +265,61 @@ upstream {
 `doors_upstreams` inside `reverse_proxy` takes no arguments — it reads
 upstreams from the request context populated by `doors_handler`.
 
+### Caddyfile — doors_geo
+
+```
+example.com {
+    doors_geo {
+        west.example.com {
+            AG AI AR AW BB BL BM BO BQ BR
+            BS BZ CA CK CL CO CR CU CW DM
+            DO EC FK GD GF GL GP GT GY HN
+            HT JM KN KY LC MF MH MQ MS MX
+            NI NU PA PE PF PM PR PY SR SV
+            SX TC TO TT US UY VC VE VG VI
+            WS
+        }
+        central.example.com {
+            AD AE AF AL AM AO AQ AT AX AZ
+            BA BE BF BG BH BI BJ BY CD CF
+            CG CH CI CM CV CY CZ DE DJ DK
+            DZ EE EG ER ES ET EU FI FO FR
+            GA GB GE GG GH GI GM GN GQ GR
+            GW HR HU IE IL IM IQ IR IS IT
+            JE JO KE KG KM KW KZ LB LI LR
+            LS LT LU LV LY MA MC MD ME MG
+            MK ML MR MT MU MW MZ NA NE NG
+            NL NO OM PL PS PT QA RE RO RS
+            RU RW SA SC SD SE SI SK SL SN
+            SO SS ST SY SZ TD TG TJ TK TM
+            TN TR UA UG UZ VA WF YE YT ZA
+            ZM ZW ZZ
+        }
+        asia.example.com {
+            AS AU BD BN BT CN FJ FM GU HK
+            ID IN IO JP KH KI KP KR LA LK
+            MM MN MO MP MV MY NC NF NP NR
+            NZ PG PH PK PW SB SG TH TL TV
+            TW VN VU
+        }
+    }
+}
+```
+
+Each key that is not a recognised directive (`ipv4_url`, `ipv6_url`,
+`update_interval`, `download_timeout`) is treated as a domain block.
+The values inside are
+[ISO 3166-1 alpha-2](https://en.wikipedia.org/wiki/ISO_3166-1_alpha-2)
+country codes — one or more per line.
+
+| Directive | Default | Description |
+|---|---|---|
+| `ipv4_url` | `ipdeny.com/ipblocks/data/countries/all-zones.tar.gz` | URL for IPv4 country zone archive |
+| `ipv6_url` | `ipdeny.com/ipv6/ipaddresses/blocks/ipv6-all-zones.tar.gz` | URL for IPv6 country zone archive |
+| `update_interval` | `24h` | Interval between database downloads |
+| `download_timeout` | `30s` | HTTP client timeout for downloads |
+| `<domain>` | (required — at least one) | Target domain; block contains country codes to redirect |
+
 ### JSON
 
 ```json
@@ -246,6 +359,53 @@ upstreams from the request context populated by `doors_handler`.
 }
 ```
 
+### JSON — doors_geo
+
+```json
+{
+    "handler": "doors_geo",
+    "update_interval": "24h",
+    "download_timeout": "30s",
+    "redirects": {
+        "west.example.com": [
+            "AG", "AI", "AR", "AW", "BB", "BL", "BM", "BO", "BQ", "BR",
+            "BS", "BZ", "CA", "CK", "CL", "CO", "CR", "CU", "CW", "DM",
+            "DO", "EC", "FK", "GD", "GF", "GL", "GP", "GT", "GY", "HN",
+            "HT", "JM", "KN", "KY", "LC", "MF", "MH", "MQ", "MS", "MX",
+            "NI", "NU", "PA", "PE", "PF", "PM", "PR", "PY", "SR", "SV",
+            "SX", "TC", "TO", "TT", "US", "UY", "VC", "VE", "VG", "VI",
+            "WS"
+        ],
+        "central.example.com": [
+            "AD", "AE", "AF", "AL", "AM", "AO", "AQ", "AT", "AX", "AZ",
+            "BA", "BE", "BF", "BG", "BH", "BI", "BJ", "BY", "CD", "CF",
+            "CG", "CH", "CI", "CM", "CV", "CY", "CZ", "DE", "DJ", "DK",
+            "DZ", "EE", "EG", "ER", "ES", "ET", "EU", "FI", "FO", "FR",
+            "GA", "GB", "GE", "GG", "GH", "GI", "GM", "GN", "GQ", "GR",
+            "GW", "HR", "HU", "IE", "IL", "IM", "IQ", "IR", "IS", "IT",
+            "JE", "JO", "KE", "KG", "KM", "KW", "KZ", "LB", "LI", "LR",
+            "LS", "LT", "LU", "LV", "LY", "MA", "MC", "MD", "ME", "MG",
+            "MK", "ML", "MR", "MT", "MU", "MW", "MZ", "NA", "NE", "NG",
+            "NL", "NO", "OM", "PL", "PS", "PT", "QA", "RE", "RO", "RS",
+            "RU", "RW", "SA", "SC", "SD", "SE", "SI", "SK", "SL", "SN",
+            "SO", "SS", "ST", "SY", "SZ", "TD", "TG", "TJ", "TK", "TM",
+            "TN", "TR", "UA", "UG", "UZ", "VA", "WF", "YE", "YT", "ZA",
+            "ZM", "ZW", "ZZ"
+        ],
+        "asia.example.com": [
+            "AS", "AU", "BD", "BN", "BT", "CN", "FJ", "FM", "GU", "HK",
+            "ID", "IN", "IO", "JP", "KH", "KI", "KP", "KR", "LA", "LK",
+            "MM", "MN", "MO", "MP", "MV", "MY", "NC", "NF", "NP", "NR",
+            "NZ", "PG", "PH", "PK", "PW", "SB", "SG", "TH", "TL", "TV",
+            "TW", "VN", "VU"
+        ]
+    }
+}
+```
+
+JSON keys: `ipv4_url`, `ipv6_url`, `update_interval`, `download_timeout`,
+`redirects` (object with string keys and arrays of two‑letter country codes).
+
 ## Token format
 
 - **Plaintext**: raw pod IP bytes (`netip.Addr.AsSlice`)
@@ -258,9 +418,10 @@ upstreams from the request context populated by `doors_handler`.
 |---------|------|
 | `doorscaddy` (root) | Public API imported by Doors apps |
 | `common/` | Shared token cipher and request‑context helpers |
-| `plugin/` | Registration entry point for both Caddy modules |
+| `plugin/` | Registration entry point for all three Caddy modules |
 | `modules/handler/` | Caddy module `http.handlers.doors_handler` |
 | `modules/upstream/` | Caddy module `http.reverse_proxy.upstreams.doors_upstreams` |
+| `modules/geo/` | Caddy module `http.handlers.doors_geo` |
 
 ## License
 

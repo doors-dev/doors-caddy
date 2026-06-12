@@ -10,7 +10,7 @@ import (
 
 var errorNoUpstreams = errors.New("upstreams are not provider by doors_handler; ensure you are using doors_handler directive before reverse proxy")
 
-func (m *Module) GetUpstreams(r *http.Request) ([]*reverseproxy.Upstream, error) {
+func (m Module) GetUpstreams(r *http.Request) ([]*reverseproxy.Upstream, error) {
 	upstreams := common.GetUpstreams(r)
 	if len(upstreams) == 0 {
 		return nil, errorNoUpstreams

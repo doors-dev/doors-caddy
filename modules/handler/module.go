@@ -33,7 +33,7 @@ type Upstream struct {
 
 func (Module) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
-		ID:  "http.handlers." + Directive,
+		ID:  "http.handlers." + common.DirectiveHandler,
 		New: func() caddy.Module { return new(Module) },
 	}
 }
