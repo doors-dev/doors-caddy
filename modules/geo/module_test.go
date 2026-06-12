@@ -3,18 +3,19 @@ package geo
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
+	"go.uber.org/zap"
 )
 
 func TestGeoUnmarshalCaddyfile_Full(t *testing.T) {
 	d := caddyfile.NewTestDispenser(`doors_geo {
-	ipv4_url https://example.com/v4.tar.gz
-	ipv6_url https://example.com/v6.tar.gz
+	tarball_url https://example.com/geo-ip.tar.gz
 	update_interval 12h
 	download_timeout 60s
 	example.com {
@@ -30,11 +31,8 @@ func TestGeoUnmarshalCaddyfile_Full(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if m.IPv4URL != "https://example.com/v4.tar.gz" {
-		t.Errorf("expected custom IPv4URL, got %q", m.IPv4URL)
-	}
-	if m.IPv6URL != "https://example.com/v6.tar.gz" {
-		t.Errorf("expected custom IPv6URL, got %q", m.IPv6URL)
+	if m.TarballURL != "https://example.com/geo-ip.tar.gz" {
+		t.Errorf("expected custom TarballURL, got %q", m.TarballURL)
 	}
 	if time.Duration(m.UpdateInterval) != 12*time.Hour {
 		t.Errorf("expected 12h interval, got %v", time.Duration(m.UpdateInterval))
@@ -133,8 +131,7 @@ func TestGeoProvision_Defaults(t *testing.T) {
 	defer srv.Close()
 
 	m := &Module{
-		IPv4URL: srv.URL,
-		IPv6URL: srv.URL,
+		TarballURL: srv.URL,
 		Redirects: map[string][]string{
 			"us.example.com": {"US"},
 		},
@@ -149,8 +146,8 @@ func TestGeoProvision_Defaults(t *testing.T) {
 	if m.lookup["US"] != "us.example.com" {
 		t.Errorf("expected US -> us.example.com, got %q", m.lookup["US"])
 	}
-	if m.IPv4URL != srv.URL {
-		t.Errorf("expected kept custom URL, got %q", m.IPv4URL)
+	if m.TarballURL != srv.URL {
+		t.Errorf("expected kept custom URL, got %q", m.TarballURL)
 	}
 	updateInterval := time.Duration(m.UpdateInterval)
 	defaultInterval := 24 * time.Hour
@@ -167,8 +164,7 @@ func TestGeoProvision_ReverseLookup(t *testing.T) {
 	defer srv.Close()
 
 	m := &Module{
-		IPv4URL: srv.URL,
-		IPv6URL: srv.URL,
+		TarballURL: srv.URL,
 		Redirects: map[string][]string{
 			"us.example.com": {"US", "CA"},
 			"eu.example.com": {"DE", "FR"},
@@ -200,8 +196,7 @@ func TestGeoProvision_CustomValues(t *testing.T) {
 	defer srv.Close()
 
 	m := &Module{
-		IPv4URL:         srv.URL,
-		IPv6URL:         srv.URL,
+		TarballURL:      srv.URL,
 		UpdateInterval:  caddy.Duration(6 * time.Hour),
 		DownloadTimeout: caddy.Duration(45 * time.Second),
 		Redirects: map[string][]string{
@@ -215,14 +210,59 @@ func TestGeoProvision_CustomValues(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	m.Cleanup()
 
-	if m.IPv4URL != srv.URL {
-		t.Errorf("expected custom IPv4URL, got %q", m.IPv4URL)
+	if m.TarballURL != srv.URL {
+		t.Errorf("expected custom TarballURL, got %q", m.TarballURL)
 	}
 	if time.Duration(m.UpdateInterval) != 6*time.Hour {
 		t.Errorf("expected 6h interval, got %v", time.Duration(m.UpdateInterval))
 	}
 	if time.Duration(m.DownloadTimeout) != 45*time.Second {
 		t.Errorf("expected 45s timeout, got %v", time.Duration(m.DownloadTimeout))
+	}
+}
+
+func TestDownloadAndLookup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	svc := &geoService{
+		TarballURL: defaultTarballURL,
+		Interval:   24 * time.Hour,
+		Timeout:    2 * time.Minute,
+		Logger:     zap.NewNop(),
+	}
+	svc.Launch()
+	defer svc.Cancel()
+
+	deadline := time.Now().Add(2 * time.Minute)
+	for time.Now().Before(deadline) {
+		if svc.v4.Load() != nil && svc.v6.Load() != nil {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if svc.v4.Load() == nil || svc.v6.Load() == nil {
+		t.Fatal("tables not populated within deadline")
+	}
+
+	tests := []struct {
+		ip      string
+		country string
+	}{
+		{"8.8.8.8", "US"},
+		{"1.1.1.1", "AU"},
+	}
+
+	for _, tt := range tests {
+		country, ok := svc.Lookup(netip.MustParseAddr(tt.ip))
+		if !ok {
+			t.Errorf("IP %s not found", tt.ip)
+			continue
+		}
+		if country != tt.country {
+			t.Errorf("IP %s: expected %s, got %s", tt.ip, tt.country, country)
+		}
 	}
 }
 

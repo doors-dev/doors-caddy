@@ -12,13 +12,11 @@ import (
 )
 
 const (
-	defaultIPv4URL = "https://www.ipdeny.com/ipblocks/data/countries/all-zones.tar.gz"
-	defaultIPv6URL = "https://www.ipdeny.com/ipv6/ipaddresses/blocks/ipv6-all-zones.tar.gz"
+	defaultTarballURL = "https://github.com/ipverse/geo-ip-blocks/archive/refs/heads/master.tar.gz"
 )
 
 type Module struct {
-	IPv4URL         string              `json:"ipv4_url,omitempty"`
-	IPv6URL         string              `json:"ipv6_url,omitempty"`
+	TarballURL      string              `json:"tarball_url,omitempty"`
 	UpdateInterval  caddy.Duration      `json:"update_interval,omitempty"`
 	DownloadTimeout caddy.Duration      `json:"download_timeout,omitempty"`
 	Redirects       map[string][]string `json:"redirects,omitempty"`
@@ -40,19 +38,11 @@ func (m *Module) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 		for d.NextBlock(0) {
 			key := d.Val()
 			switch key {
-			case "ipv4_url":
+			case "tarball_url":
 				if !d.NextArg() {
 					return d.ArgErr()
 				}
-				m.IPv4URL = d.Val()
-				if d.NextArg() {
-					return d.ArgErr()
-				}
-			case "ipv6_url":
-				if !d.NextArg() {
-					return d.ArgErr()
-				}
-				m.IPv6URL = d.Val()
+				m.TarballURL = d.Val()
 				if d.NextArg() {
 					return d.ArgErr()
 				}
@@ -112,11 +102,8 @@ func (m *Module) Provision(ctx caddy.Context) (err error) {
 			m.lookup[country] = domain
 		}
 	}
-	if m.IPv4URL == "" {
-		m.IPv4URL = defaultIPv4URL
-	}
-	if m.IPv6URL == "" {
-		m.IPv6URL = defaultIPv6URL
+	if m.TarballURL == "" {
+		m.TarballURL = defaultTarballURL
 	}
 	if m.UpdateInterval == 0 {
 		m.UpdateInterval = caddy.Duration(24 * time.Hour)
@@ -126,8 +113,7 @@ func (m *Module) Provision(ctx caddy.Context) (err error) {
 	}
 	m.logger = ctx.Logger(m)
 	m.logger.Info("geo module: provisioning",
-		zap.String("ipv4_url", m.IPv4URL),
-		zap.String("ipv6_url", m.IPv6URL),
+		zap.String("tarball_url", m.TarballURL),
 		zap.Duration("update_interval", time.Duration(m.UpdateInterval)),
 		zap.Duration("download_timeout", time.Duration(m.DownloadTimeout)),
 		zap.Int("redirect_domains", len(m.Redirects)),
@@ -140,11 +126,10 @@ func (m *Module) Provision(ctx caddy.Context) (err error) {
 		)
 	}
 	m.service = &geoService{
-		IPv4URL:  m.IPv4URL,
-		IPv6URL:  m.IPv6URL,
-		Logger:   ctx.Logger(m),
-		Interval: time.Duration(m.UpdateInterval),
-		Timeout:  time.Duration(m.DownloadTimeout),
+		TarballURL: m.TarballURL,
+		Logger:     ctx.Logger(m),
+		Interval:   time.Duration(m.UpdateInterval),
+		Timeout:    time.Duration(m.DownloadTimeout),
 	}
 	m.service.Launch()
 	return nil

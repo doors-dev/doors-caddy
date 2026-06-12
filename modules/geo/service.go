@@ -2,17 +2,17 @@ package geo
 
 import (
 	"archive/tar"
-	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math/rand"
 	"net/http"
 	"net/netip"
-	"path/filepath"
+	"path"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -22,43 +22,34 @@ import (
 	"go.uber.org/zap"
 )
 
-const maxBodySize = 8 * 1024 * 1024
+const maxBodySize = 32 * 1024 * 1024
 
 type geoService struct {
-	IPv4URL  string
-	IPv6URL  string
-	Interval time.Duration
-	Timeout  time.Duration
-	Logger   *zap.Logger
-	cancel   context.CancelFunc
-	v4       atomic.Pointer[bart.Table[string]]
-	v6       atomic.Pointer[bart.Table[string]]
+	TarballURL string
+	Interval   time.Duration
+	Timeout    time.Duration
+	Logger     *zap.Logger
+	cancel     context.CancelFunc
+	v4         atomic.Pointer[bart.Table[string]]
+	v6         atomic.Pointer[bart.Table[string]]
 }
 
 func (m *geoService) Launch() {
-	m.Logger.Info("geo service: launching background updaters",
-		zap.String("ipv4_url", m.IPv4URL),
-		zap.String("ipv6_url", m.IPv6URL),
+	m.Logger.Info("geo service: launching background updater",
+		zap.String("tarball_url", m.TarballURL),
 		zap.Duration("interval", m.Interval),
 		zap.Duration("timeout", m.Timeout),
 	)
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
 	go updater{
-		Ctx:      ctx,
-		Url:      m.IPv4URL,
-		Cell:     &m.v4,
-		Logger:   m.Logger,
-		Interval: m.Interval,
-		Timeout:  m.Timeout,
-	}.Run()
-	go updater{
-		Ctx:      ctx,
-		Url:      m.IPv6URL,
-		Cell:     &m.v6,
-		Logger:   m.Logger,
-		Interval: m.Interval,
-		Timeout:  m.Timeout,
+		Ctx:        ctx,
+		TarballURL: m.TarballURL,
+		V4:         &m.v4,
+		V6:         &m.v6,
+		Logger:     m.Logger,
+		Interval:   m.Interval,
+		Timeout:    m.Timeout,
 	}.Run()
 }
 
@@ -97,7 +88,7 @@ func (g *geoService) Lookup(ip netip.Addr) (string, bool) {
 }
 
 func (m *geoService) Cancel() {
-	m.Logger.Info("geo service: cancelling background updaters")
+	m.Logger.Info("geo service: cancelling background updater")
 	m.cancel()
 }
 
@@ -107,19 +98,20 @@ type HTTPMeta struct {
 }
 
 type updater struct {
-	Ctx      context.Context
-	Url      string
-	Cell     *atomic.Pointer[bart.Table[string]]
-	Logger   *zap.Logger
-	Interval time.Duration
-	Timeout  time.Duration
-	failures int
-	meta     HTTPMeta
+	Ctx        context.Context
+	TarballURL string
+	V4         *atomic.Pointer[bart.Table[string]]
+	V6         *atomic.Pointer[bart.Table[string]]
+	Logger     *zap.Logger
+	Interval   time.Duration
+	Timeout    time.Duration
+	failures   int
+	meta       HTTPMeta
 }
 
 func (u updater) Run() {
 	u.Logger.Info("geo updater: starting",
-		zap.String("url", u.Url),
+		zap.String("tarball_url", u.TarballURL),
 		zap.Duration("interval", u.Interval),
 		zap.Duration("timeout", u.Timeout),
 	)
@@ -128,19 +120,19 @@ func (u updater) Run() {
 		var delay time.Duration
 		if err != nil {
 			u.Logger.Error("geo updater: IP database update error",
-				zap.String("url", u.Url),
+				zap.String("tarball_url", u.TarballURL),
 				zap.Error(err),
 			)
 			delay = u.retry()
 			u.Logger.Warn("geo updater: retrying after delay",
-				zap.String("url", u.Url),
+				zap.String("tarball_url", u.TarballURL),
 				zap.Duration("delay", delay),
 				zap.Int("consecutive_failures", u.failures),
 			)
 		} else {
 			delay = u.wait()
 			u.Logger.Info("geo updater: update succeeded, waiting for next cycle",
-				zap.String("url", u.Url),
+				zap.String("tarball_url", u.TarballURL),
 				zap.Duration("delay", delay),
 			)
 		}
@@ -148,7 +140,7 @@ func (u updater) Run() {
 		case <-time.After(delay):
 		case <-u.Ctx.Done():
 			u.Logger.Info("geo updater: context cancelled, stopping",
-				zap.String("url", u.Url),
+				zap.String("tarball_url", u.TarballURL),
 			)
 			return
 		}
@@ -178,11 +170,11 @@ func (u *updater) retry() time.Duration {
 
 func (u *updater) update() error {
 	u.Logger.Debug("geo updater: downloading database",
-		zap.String("url", u.Url),
+		zap.String("tarball_url", u.TarballURL),
 		zap.String("etag", u.meta.ETag),
 		zap.String("last_modified", u.meta.LastModified),
 	)
-	req, err := http.NewRequestWithContext(u.Ctx, http.MethodGet, u.Url, nil)
+	req, err := http.NewRequestWithContext(u.Ctx, http.MethodGet, u.TarballURL, nil)
 	if err != nil {
 		panic(err)
 	}
@@ -197,7 +189,7 @@ func (u *updater) update() error {
 	resp, err := client.Do(req)
 	if err != nil {
 		u.Logger.Error("geo updater: HTTP request failed",
-			zap.String("url", u.Url),
+			zap.String("tarball_url", u.TarballURL),
 			zap.Error(err),
 		)
 		return err
@@ -205,7 +197,7 @@ func (u *updater) update() error {
 	defer resp.Body.Close()
 
 	u.Logger.Debug("geo updater: HTTP response received",
-		zap.String("url", u.Url),
+		zap.String("tarball_url", u.TarballURL),
 		zap.Int("status", resp.StatusCode),
 		zap.String("status_text", resp.Status),
 		zap.Int64("content_length", resp.ContentLength),
@@ -215,13 +207,13 @@ func (u *updater) update() error {
 
 	if resp.StatusCode == http.StatusNotModified {
 		u.Logger.Debug("geo updater: database not modified (304)",
-			zap.String("url", u.Url),
+			zap.String("tarball_url", u.TarballURL),
 		)
 		return nil
 	}
 	if resp.StatusCode != http.StatusOK {
 		u.Logger.Error("geo updater: unexpected HTTP status",
-			zap.String("url", u.Url),
+			zap.String("tarball_url", u.TarballURL),
 			zap.Int("status", resp.StatusCode),
 			zap.String("status_text", resp.Status),
 		)
@@ -230,37 +222,49 @@ func (u *updater) update() error {
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize))
 	if err != nil {
 		u.Logger.Error("geo updater: failed to read response body",
-			zap.String("url", u.Url),
+			zap.String("tarball_url", u.TarballURL),
 			zap.Error(err),
 		)
 		return common.ErrorsJoin(errorRequest, err)
 	}
+
 	u.Logger.Debug("geo updater: database downloaded",
-		zap.String("url", u.Url),
+		zap.String("tarball_url", u.TarballURL),
 		zap.Int("size_bytes", len(data)),
 	)
 
-	table := new(bart.Table[string])
-	if err := parseArchive(data, table); err != nil {
-		u.Logger.Error("geo updater: failed to parse archive",
-			zap.String("url", u.Url),
+	v4 := new(bart.Table[string])
+	v6 := new(bart.Table[string])
+	if err := parseTarball(data, v4, v6); err != nil {
+		u.Logger.Error("geo updater: failed to parse tarball",
+			zap.String("tarball_url", u.TarballURL),
 			zap.Error(err),
 		)
 		return common.ErrorsJoin(errorParse, err)
 	}
-	u.Cell.Store(table)
+	u.V4.Store(v4)
+	u.V6.Store(v6)
 	u.meta.ETag = resp.Header.Get("ETag")
 	u.meta.LastModified = resp.Header.Get("Last-Modified")
 
 	u.Logger.Info("geo updater: database loaded successfully",
-		zap.String("url", u.Url),
-		zap.Int("entries", table.Size()),
+		zap.String("tarball_url", u.TarballURL),
+		zap.Int("v4_entries", v4.Size()),
+		zap.Int("v6_entries", v6.Size()),
 	)
 
 	return nil
 }
 
-func parseArchive(data []byte, table *bart.Table[string]) error {
+type ipverseJSON struct {
+	CountryCode string `json:"countryCode"`
+	Prefixes    struct {
+		IPv4 []string `json:"ipv4"`
+		IPv6 []string `json:"ipv6"`
+	} `json:"prefixes"`
+}
+
+func parseTarball(data []byte, v4, v6 *bart.Table[string]) error {
 	gz, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
 		return err
@@ -278,31 +282,51 @@ func parseArchive(data []byte, table *bart.Table[string]) error {
 		if hdr.FileInfo().IsDir() {
 			continue
 		}
-		name := filepath.Base(hdr.Name)
-		if !strings.HasSuffix(name, ".zone") {
+		_, ok := extractCountry(hdr.Name)
+		if !ok {
 			continue
 		}
-		country := strings.ToUpper(strings.TrimSuffix(name, ".zone"))
-		if len(country) != 2 {
+		var entry ipverseJSON
+		if err := json.NewDecoder(tr).Decode(&entry); err != nil {
+			return fmt.Errorf("%s: %w", hdr.Name, err)
+		}
+		if entry.CountryCode == "" {
 			continue
 		}
-		scanner := bufio.NewScanner(tr)
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue
-			}
-			prefix, err := netip.ParsePrefix(line)
+		for _, cidr := range entry.Prefixes.IPv4 {
+			prefix, err := netip.ParsePrefix(cidr)
 			if err != nil {
-				return fmt.Errorf("%s: bad prefix %q: %w", name, line, err)
+				return fmt.Errorf("%s: bad ipv4 prefix %q: %w", hdr.Name, cidr, err)
 			}
-			table.Insert(prefix.Masked(), country)
+			v4.Insert(prefix.Masked(), entry.CountryCode)
 		}
-		if err := scanner.Err(); err != nil {
-			return err
+		for _, cidr := range entry.Prefixes.IPv6 {
+			prefix, err := netip.ParsePrefix(cidr)
+			if err != nil {
+				return fmt.Errorf("%s: bad ipv6 prefix %q: %w", hdr.Name, cidr, err)
+			}
+			v6.Insert(prefix.Masked(), entry.CountryCode)
 		}
 	}
 	return nil
+}
+
+func extractCountry(name string) (string, bool) {
+	parts := strings.Split(path.Clean(name), "/")
+	if len(parts) < 4 {
+		return "", false
+	}
+	if parts[len(parts)-3] != "country" {
+		return "", false
+	}
+	cc := parts[len(parts)-2]
+	if len(cc) != 2 {
+		return "", false
+	}
+	if parts[len(parts)-1] != cc+".json" {
+		return "", false
+	}
+	return cc, true
 }
 
 func jitter(dur time.Duration) time.Duration {

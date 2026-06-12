@@ -263,11 +263,11 @@ country matches a configured domain.
 
 ### Database updates
 
-Two goroutines run in the background — one for IPv4, one for IPv6. Each
-periodically fetches a gzipped tar archive of `.zone` files (CIDR lists per
-country) from [ipdeny.com](https://www.ipdeny.com). The CIDR → country
-mapping is loaded into a lock-free routing table ([bart](https://github.com/gaissmai/bart))
-and swapped in atomically on each successful download, so lookups never block.
+A background goroutine periodically fetches a gzipped tar archive from
+[ipverse/geo-ip-blocks](https://github.com/ipverse/geo-ip-blocks) (or a
+custom URL). The archive contains per-country JSON files with IPv4 and IPv6
+prefixes. Both tables are populated and swapped in atomically on each
+successful download, so lookups never block.
 
 - **Update interval**: 24 h by default, configurable with `update_interval`.
 - **Conditional requests**: `ETag` and `If-Modified-Since` avoid re‑fetching
@@ -275,7 +275,7 @@ and swapped in atomically on each successful download, so lookups never block.
 - **Exponential backoff**: on failure, retries start at 30 s and cap at 1 h,
   with jitter (±10 %) added to every wait.
 - **Download timeout**: HTTP client timeout, 30 s default (`download_timeout`).
-- **Max body size**: response body is capped at 8 MiB.
+- **Max body size**: response body is capped at 32 MiB.
 
 ### Request handling
 
@@ -309,7 +309,7 @@ in exactly one domain block.
 ```
 example.com {
     doors_geo {
-        west.example.com {
+        us.example.com {
             AG AI AR AW BB BL BM BO BQ BR
             BS BZ CA CK CL CO CR CU CW DM
             DO EC FK GD GF GL GP GT GY HN
@@ -318,7 +318,7 @@ example.com {
             SX TC TO TT US UY VC VE VG VI
             WS
         }
-        central.example.com {
+        eu.example.com {
             AD AE AF AL AM AO AQ AT AX AZ
             BA BE BF BG BH BI BJ BY CD CF
             CG CH CI CM CV CY CZ DE DJ DK
@@ -332,7 +332,7 @@ example.com {
             RU RW SA SC SD SE SI SK SL SN
             SO SS ST SY SZ TD TG TJ TK TM
             TN TR UA UG UZ VA WF YE YT ZA
-            ZM ZW ZZ
+            ZM ZW
         }
         asia.example.com {
             AS AU BD BN BT CN FJ FM GU HK
@@ -345,7 +345,7 @@ example.com {
 }
 ```
 
-Each key that is not a recognised directive (`ipv4_url`, `ipv6_url`,
+Each key that is not a recognised directive (`tarball_url`,
 `update_interval`, `download_timeout`) is treated as a domain block.
 The values inside are
 [ISO 3166-1 alpha-2](https://en.wikipedia.org/wiki/ISO_3166-1_alpha-2)
@@ -353,8 +353,7 @@ country codes — one or more per line.
 
 | Directive | Default | Description |
 |---|---|---|
-| `ipv4_url` | `ipdeny.com/ipblocks/data/countries/all-zones.tar.gz` | URL for IPv4 country zone archive |
-| `ipv6_url` | `ipdeny.com/ipv6/ipaddresses/blocks/ipv6-all-zones.tar.gz` | URL for IPv6 country zone archive |
+| `tarball_url` | `https://github.com/ipverse/geo-ip-blocks/archive/refs/heads/master.tar.gz` | URL for the geo-ip-blocks tarball |
 | `update_interval` | `24h` | Interval between database downloads |
 | `download_timeout` | `30s` | HTTP client timeout for downloads |
 | `<domain>` | (required — at least one) | Target domain; block contains country codes to redirect |
@@ -367,7 +366,7 @@ country codes — one or more per line.
     "update_interval": "24h",
     "download_timeout": "30s",
     "redirects": {
-        "west.example.com": [
+        "us.example.com": [
             "AG", "AI", "AR", "AW", "BB", "BL", "BM", "BO", "BQ", "BR",
             "BS", "BZ", "CA", "CK", "CL", "CO", "CR", "CU", "CW", "DM",
             "DO", "EC", "FK", "GD", "GF", "GL", "GP", "GT", "GY", "HN",
@@ -376,7 +375,7 @@ country codes — one or more per line.
             "SX", "TC", "TO", "TT", "US", "UY", "VC", "VE", "VG", "VI",
             "WS"
         ],
-        "central.example.com": [
+        "eu.example.com": [
             "AD", "AE", "AF", "AL", "AM", "AO", "AQ", "AT", "AX", "AZ",
             "BA", "BE", "BF", "BG", "BH", "BI", "BJ", "BY", "CD", "CF",
             "CG", "CH", "CI", "CM", "CV", "CY", "CZ", "DE", "DJ", "DK",
@@ -390,7 +389,7 @@ country codes — one or more per line.
             "RU", "RW", "SA", "SC", "SD", "SE", "SI", "SK", "SL", "SN",
             "SO", "SS", "ST", "SY", "SZ", "TD", "TG", "TJ", "TK", "TM",
             "TN", "TR", "UA", "UG", "UZ", "VA", "WF", "YE", "YT", "ZA",
-            "ZM", "ZW", "ZZ"
+            "ZM", "ZW"
         ],
         "asia.example.com": [
             "AS", "AU", "BD", "BN", "BT", "CN", "FJ", "FM", "GU", "HK",
@@ -403,7 +402,7 @@ country codes — one or more per line.
 }
 ```
 
-JSON keys: `ipv4_url`, `ipv6_url`, `update_interval`, `download_timeout`,
+JSON keys: `tarball_url`, `update_interval`, `download_timeout`,
 `redirects` (object with string keys and arrays of two‑letter country codes).
 
 ## Token format

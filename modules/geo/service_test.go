@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -73,120 +74,121 @@ func TestGeoService_Lookup_IPv4MappedIPv6(t *testing.T) {
 	}
 }
 
-func TestParseArchive_Valid(t *testing.T) {
-	data := makeTarGz(t, map[string][]string{
-		"us.zone": {"1.2.3.0/24", "5.6.7.0/24"},
-		"gb.zone": {"10.0.0.0/8"},
+func TestParseTarball_Valid(t *testing.T) {
+	data := makeIPverseTarGz(t, map[string]ipverseTestFile{
+		"us": {V4: []string{"1.2.3.0/24", "5.6.7.0/24"}},
+		"gb": {V4: []string{"10.0.0.0/8"}, V6: []string{"2001:db8::/48"}},
 	})
-	table := new(bart.Table[string])
-	err := parseArchive(data, table)
+	v4 := new(bart.Table[string])
+	v6 := new(bart.Table[string])
+	err := parseTarball(data, v4, v6)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	country, found := table.Lookup(netip.MustParseAddr("1.2.3.4"))
+	country, found := v4.Lookup(netip.MustParseAddr("1.2.3.4"))
 	if !found || country != "US" {
 		t.Errorf("expected US, got %q (found=%v)", country, found)
 	}
 
-	country, found = table.Lookup(netip.MustParseAddr("10.0.0.1"))
+	country, found = v4.Lookup(netip.MustParseAddr("10.0.0.1"))
 	if !found || country != "GB" {
 		t.Errorf("expected GB, got %q (found=%v)", country, found)
 	}
+
+	country, found = v6.Lookup(netip.MustParseAddr("2001:db8::1"))
+	if !found || country != "GB" {
+		t.Errorf("expected GB (v6), got %q (found=%v)", country, found)
+	}
 }
 
-func TestParseArchive_SkipsNonZone(t *testing.T) {
-	data := makeTarGz(t, map[string][]string{
-		"us.zone":  {"1.2.3.0/24"},
-		"readme.txt": {"some text"},
+func TestParseTarball_SkipsNonJSON(t *testing.T) {
+	data := makeIPverseTarGzWithExtra(t, map[string]ipverseTestFile{
+		"us": {V4: []string{"1.2.3.0/24"}},
+	}, map[string]string{
+		"country/us/readme.txt": "hello",
 	})
-	table := new(bart.Table[string])
-	err := parseArchive(data, table)
+	v4 := new(bart.Table[string])
+	v6 := new(bart.Table[string])
+	err := parseTarball(data, v4, v6)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	_, found := table.Lookup(netip.MustParseAddr("1.2.3.4"))
+	_, found := v4.Lookup(netip.MustParseAddr("1.2.3.4"))
 	if !found {
 		t.Error("expected US to be loaded")
 	}
 }
 
-func TestParseArchive_SkipsDirs(t *testing.T) {
-	data := makeTarGzWithDir(t, "somedir", map[string][]string{
-		"us.zone": {"1.2.3.0/24"},
-	})
-	table := new(bart.Table[string])
-	err := parseArchive(data, table)
+func TestParseTarball_SkipsDirs(t *testing.T) {
+	data := makeIPverseTarGzWithExtra(t, map[string]ipverseTestFile{
+		"us": {V4: []string{"1.2.3.0/24"}},
+	}, map[string]string{})
+	v4 := new(bart.Table[string])
+	v6 := new(bart.Table[string])
+	err := parseTarball(data, v4, v6)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	_, found := table.Lookup(netip.MustParseAddr("1.2.3.4"))
+	_, found := v4.Lookup(netip.MustParseAddr("1.2.3.4"))
 	if !found {
 		t.Error("expected US to be loaded despite directory entries")
 	}
 }
 
-func TestParseArchive_SkipsComments(t *testing.T) {
-	data := makeTarGz(t, map[string][]string{
-		"us.zone": {"# this is a comment", "", "   ", "1.2.3.0/24", "# another comment"},
+func TestParseTarball_InvalidCountryCodeJSON(t *testing.T) {
+	data := makeIPverseTarGzWithCustom(t, map[string]string{
+		"country/usa/usa.json": `{"countryCode":"USA","prefixes":{"ipv4":["1.2.3.0/24"],"ipv6":[]}}`,
 	})
-	table := new(bart.Table[string])
-	err := parseArchive(data, table)
+	v4 := new(bart.Table[string])
+	v6 := new(bart.Table[string])
+	err := parseTarball(data, v4, v6)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	_, found := table.Lookup(netip.MustParseAddr("1.2.3.4"))
-	if !found {
-		t.Error("expected US after skipping comments and blanks")
+	_, found := v4.Lookup(netip.MustParseAddr("1.2.3.4"))
+	if found {
+		t.Error("usa directory should be skipped (cc path not 2 chars)")
 	}
 }
 
-func TestParseArchive_InvalidCountryLen(t *testing.T) {
-	data := makeTarGz(t, map[string][]string{
-		"usa.zone": {"1.2.3.0/24"},
-		"x.zone":   {"5.6.7.0/24"},
-		"us.zone":  {"10.0.0.0/8"},
+func TestParseTarball_BadPrefix(t *testing.T) {
+	data := makeIPverseTarGzWithCustom(t, map[string]string{
+		"country/us/us.json": `{"countryCode":"US","prefixes":{"ipv4":["not-a-cidr"],"ipv6":[]}}`,
 	})
-	table := new(bart.Table[string])
-	err := parseArchive(data, table)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// usa.zone (len 3) and x.zone (len 1) should be skipped
-	_, found := table.Lookup(netip.MustParseAddr("1.2.3.4"))
-	if found {
-		t.Error("usa.zone should be skipped (country code len != 2)")
-	}
-	_, found = table.Lookup(netip.MustParseAddr("5.6.7.8"))
-	if found {
-		t.Error("x.zone should be skipped (country code len != 2)")
-	}
-	// us.zone should be loaded
-	_, found = table.Lookup(netip.MustParseAddr("10.0.0.1"))
-	if !found {
-		t.Error("us.zone should be loaded")
-	}
-}
-
-func TestParseArchive_BadPrefix(t *testing.T) {
-	data := makeTarGz(t, map[string][]string{
-		"us.zone": {"not-a-cidr"},
-	})
-	table := new(bart.Table[string])
-	err := parseArchive(data, table)
+	v4 := new(bart.Table[string])
+	v6 := new(bart.Table[string])
+	err := parseTarball(data, v4, v6)
 	if err == nil {
 		t.Fatal("expected error for bad prefix")
 	}
-	if !strings.Contains(err.Error(), "bad prefix") {
-		t.Errorf("expected 'bad prefix' in error, got: %v", err)
+	if !strings.Contains(err.Error(), "bad ipv4 prefix") {
+		t.Errorf("expected 'bad ipv4 prefix' in error, got: %v", err)
 	}
 }
 
-func TestParseArchive_NotGzip(t *testing.T) {
-	table := new(bart.Table[string])
-	err := parseArchive([]byte("not gzip data"), table)
+func TestParseTarball_NotGzip(t *testing.T) {
+	v4 := new(bart.Table[string])
+	v6 := new(bart.Table[string])
+	err := parseTarball([]byte("not gzip data"), v4, v6)
 	if err == nil {
 		t.Fatal("expected error for non-gzip data")
+	}
+}
+
+func TestParseTarball_EmptyCountryCode(t *testing.T) {
+	data := makeIPverseTarGzWithCustom(t, map[string]string{
+		"country/us/us.json": `{"countryCode":"","prefixes":{"ipv4":["1.2.3.0/24"],"ipv6":[]}}`,
+	})
+	v4 := new(bart.Table[string])
+	v6 := new(bart.Table[string])
+	err := parseTarball(data, v4, v6)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_, found := v4.Lookup(netip.MustParseAddr("1.2.3.4"))
+	if found {
+		t.Error("expected empty countryCode to be skipped")
 	}
 }
 
@@ -201,7 +203,7 @@ func TestRetry_ExponentialBackoff(t *testing.T) {
 	}
 
 	d2 := u.retry()
-	base2 := retryMin << 1 // 60s
+	base2 := retryMin << 1
 	if d2 < base2-base2/10 || d2 > base2+base2/10 {
 		t.Errorf("retry 2 should be ~60s (+/-10%%), got %v", d2)
 	}
@@ -210,7 +212,7 @@ func TestRetry_ExponentialBackoff(t *testing.T) {
 	}
 
 	d3 := u.retry()
-	base3 := retryMin << 2 // 120s
+	base3 := retryMin << 2
 	if d3 < base3-base3/10 || d3 > base3+base3/10 {
 		t.Errorf("retry 3 should be ~120s (+/-10%%), got %v", d3)
 	}
@@ -219,7 +221,6 @@ func TestRetry_ExponentialBackoff(t *testing.T) {
 func TestRetry_CapsAt1Hour(t *testing.T) {
 	u := updater{failures: 20}
 	delay := u.retry()
-	// base delay capped at 1h, jitter can add up to 10%, so max is ~1h6m
 	maxWithJitter := retryMax + retryMax/10
 	if delay > maxWithJitter {
 		t.Errorf("retry should be capped at ~1h (+10%% jitter), got %v", delay)
@@ -228,7 +229,7 @@ func TestRetry_CapsAt1Hour(t *testing.T) {
 
 func TestRetry_JitterBounds(t *testing.T) {
 	u := updater{failures: 0}
-	baseDelay := retryMin // 30s after 0 failures
+	baseDelay := retryMin
 	delay := u.retry()
 
 	minExpected := baseDelay - baseDelay/10
@@ -256,13 +257,16 @@ func TestUpdater_304NotModified(t *testing.T) {
 	}))
 	defer ts.Close()
 
+	v4 := &atomic.Pointer[bart.Table[string]]{}
+	v6 := &atomic.Pointer[bart.Table[string]]{}
 	u := updater{
-		Ctx:      context.Background(),
-		Url:      ts.URL,
-		Cell:     &atomic.Pointer[bart.Table[string]]{},
-		Logger:   zap.NewNop(),
-		Interval: time.Hour,
-		Timeout:  5 * time.Second,
+		Ctx:        context.Background(),
+		TarballURL: ts.URL,
+		V4:         v4,
+		V6:         v6,
+		Logger:     zap.NewNop(),
+		Interval:   time.Hour,
+		Timeout:    5 * time.Second,
 	}
 	err := u.update()
 	if err != nil {
@@ -271,8 +275,8 @@ func TestUpdater_304NotModified(t *testing.T) {
 }
 
 func TestUpdater_200UpdatesTable(t *testing.T) {
-	archive := makeTarGz(t, map[string][]string{
-		"us.zone": {"1.2.3.0/24"},
+	archive := makeIPverseTarGz(t, map[string]ipverseTestFile{
+		"us": {V4: []string{"1.2.3.0/24"}},
 	})
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("ETag", `"abc123"`)
@@ -282,28 +286,36 @@ func TestUpdater_200UpdatesTable(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	cell := &atomic.Pointer[bart.Table[string]]{}
+	v4Cell := &atomic.Pointer[bart.Table[string]]{}
+	v6Cell := &atomic.Pointer[bart.Table[string]]{}
 	u := updater{
-		Ctx:      context.Background(),
-		Url:      ts.URL,
-		Cell:     cell,
-		Logger:   zap.NewNop(),
-		Interval: time.Hour,
-		Timeout:  5 * time.Second,
+		Ctx:        context.Background(),
+		TarballURL: ts.URL,
+		V4:         v4Cell,
+		V6:         v6Cell,
+		Logger:     zap.NewNop(),
+		Interval:   time.Hour,
+		Timeout:    5 * time.Second,
 	}
 	err := u.update()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	table := cell.Load()
+	table := v4Cell.Load()
 	if table == nil {
-		t.Fatal("table not set after update")
+		t.Fatal("v4 table not set after update")
 	}
 	country, found := table.Lookup(netip.MustParseAddr("1.2.3.4"))
 	if !found || country != "US" {
-		t.Errorf("expected US in table, got %q (found=%v)", country, found)
+		t.Errorf("expected US in v4 table, got %q (found=%v)", country, found)
 	}
+
+	v6table := v6Cell.Load()
+	if v6table == nil {
+		t.Fatal("v6 table not set after update")
+	}
+
 	if u.meta.ETag != `"abc123"` {
 		t.Errorf("expected ETag to be stored, got %q", u.meta.ETag)
 	}
@@ -318,13 +330,16 @@ func TestUpdater_Non200(t *testing.T) {
 	}))
 	defer ts.Close()
 
+	v4 := &atomic.Pointer[bart.Table[string]]{}
+	v6 := &atomic.Pointer[bart.Table[string]]{}
 	u := updater{
-		Ctx:      context.Background(),
-		Url:      ts.URL,
-		Cell:     &atomic.Pointer[bart.Table[string]]{},
-		Logger:   zap.NewNop(),
-		Interval: time.Hour,
-		Timeout:  5 * time.Second,
+		Ctx:        context.Background(),
+		TarballURL: ts.URL,
+		V4:         v4,
+		V6:         v6,
+		Logger:     zap.NewNop(),
+		Interval:   time.Hour,
+		Timeout:    5 * time.Second,
 	}
 	err := u.update()
 	if err == nil {
@@ -340,7 +355,9 @@ func TestUpdater_ConditionalHeaders(t *testing.T) {
 			w.Header().Set("ETag", `"first-etag"`)
 			w.Header().Set("Last-Modified", "Wed, 01 Jan 2025 00:00:00 GMT")
 			w.WriteHeader(http.StatusOK)
-			w.Write(makeTarGz(t, map[string][]string{"us.zone": {"1.2.3.0/24"}}))
+			w.Write(makeIPverseTarGz(t, map[string]ipverseTestFile{
+				"us": {V4: []string{"1.2.3.0/24"}},
+			}))
 			return
 		}
 		if requestNum == 2 {
@@ -355,14 +372,16 @@ func TestUpdater_ConditionalHeaders(t *testing.T) {
 		}
 	}))
 
-	cell := &atomic.Pointer[bart.Table[string]]{}
+	v4 := &atomic.Pointer[bart.Table[string]]{}
+	v6 := &atomic.Pointer[bart.Table[string]]{}
 	u := updater{
-		Ctx:      context.Background(),
-		Url:      ts.URL,
-		Cell:     cell,
-		Logger:   zap.NewNop(),
-		Interval: time.Hour,
-		Timeout:  5 * time.Second,
+		Ctx:        context.Background(),
+		TarballURL: ts.URL,
+		V4:         v4,
+		V6:         v6,
+		Logger:     zap.NewNop(),
+		Interval:   time.Hour,
+		Timeout:    5 * time.Second,
 	}
 
 	err := u.update()
@@ -384,13 +403,16 @@ func TestUpdater_UserAgent(t *testing.T) {
 	}))
 	defer ts.Close()
 
+	v4 := &atomic.Pointer[bart.Table[string]]{}
+	v6 := &atomic.Pointer[bart.Table[string]]{}
 	u := updater{
-		Ctx:      context.Background(),
-		Url:      ts.URL,
-		Cell:     &atomic.Pointer[bart.Table[string]]{},
-		Logger:   zap.NewNop(),
-		Interval: time.Hour,
-		Timeout:  5 * time.Second,
+		Ctx:        context.Background(),
+		TarballURL: ts.URL,
+		V4:         v4,
+		V6:         v6,
+		Logger:     zap.NewNop(),
+		Interval:   time.Hour,
+		Timeout:    5 * time.Second,
 	}
 	_ = u.update()
 
@@ -407,18 +429,49 @@ func TestUpdater_BodySizeLimit(t *testing.T) {
 	}))
 	defer ts.Close()
 
+	v4 := &atomic.Pointer[bart.Table[string]]{}
+	v6 := &atomic.Pointer[bart.Table[string]]{}
 	u := updater{
-		Ctx:      context.Background(),
-		Url:      ts.URL,
-		Cell:     &atomic.Pointer[bart.Table[string]]{},
-		Logger:   zap.NewNop(),
-		Interval: time.Hour,
-		Timeout:  5 * time.Second,
+		Ctx:        context.Background(),
+		TarballURL: ts.URL,
+		V4:         v4,
+		V6:         v6,
+		Logger:     zap.NewNop(),
+		Interval:   time.Hour,
+		Timeout:    5 * time.Second,
 	}
 	err := u.update()
-	// expect error because the truncated body is not valid gzip
 	if err == nil {
 		t.Fatal("expected error for oversized body (truncated to non-gzip)")
+	}
+}
+
+func TestExtractCountry(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		country string
+		ok      bool
+	}{
+		{"valid", "repo-branch/country/us/us.json", "us", true},
+		{"valid nested", "deep/path/repo-branch/country/gb/gb.json", "gb", true},
+		{"wrong dir", "repo-branch/data/us/us.json", "", false},
+		{"bad cc length", "repo-branch/country/usa/usa.json", "", false},
+		{"name mismatch", "repo-branch/country/us/gb.json", "", false},
+		{"not json", "repo-branch/country/us/us.txt", "", false},
+		{"too shallow", "country/us/us.json", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			country, ok := extractCountry(tt.path)
+			if ok != tt.ok {
+				t.Errorf("expected ok=%v, got ok=%v", tt.ok, ok)
+			}
+			if country != tt.country {
+				t.Errorf("expected country=%q, got %q", tt.country, country)
+			}
+		})
 	}
 }
 
@@ -432,32 +485,54 @@ func TestJitter(t *testing.T) {
 	}
 }
 
-func makeTarGz(t *testing.T, files map[string][]string) []byte {
-	t.Helper()
-	return makeTarGzWithDir(t, "", files)
+type ipverseTestFile struct {
+	V4 []string
+	V6 []string
 }
 
-func makeTarGzWithDir(t *testing.T, dir string, files map[string][]string) []byte {
+func makeIPverseTarGz(t *testing.T, files map[string]ipverseTestFile) []byte {
+	t.Helper()
+	return makeIPverseTarGzWithExtra(t, files, nil)
+}
+
+func makeIPverseTarGzWithExtra(t *testing.T, files map[string]ipverseTestFile, extra map[string]string) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	gw := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gw)
 
-	if dir != "" {
+	prefix := "pack-aaa111/"
+	for cc, data := range files {
 		hdr := &tar.Header{
-			Name:     dir + "/",
+			Name:     prefix + fmt.Sprintf("country/%s/", cc),
 			Typeflag: tar.TypeDir,
 			Mode:     0755,
 		}
 		if err := tw.WriteHeader(hdr); err != nil {
-			t.Fatalf("write dir header: %v", err)
+			t.Fatalf("write dir header for %s: %v", cc, err)
+		}
+
+		jsonBody := fmt.Sprintf(`{"countryCode":"%s","prefixes":{"ipv4":%s,"ipv6":%s}}`,
+			strings.ToUpper(cc),
+			stringSliceToJSON(data.V4),
+			stringSliceToJSON(data.V6),
+		)
+		hdr = &tar.Header{
+			Name: prefix + fmt.Sprintf("country/%s/%s.json", cc, cc),
+			Size: int64(len(jsonBody)),
+			Mode: 0644,
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("write header for %s: %v", cc, err)
+		}
+		if _, err := tw.Write([]byte(jsonBody)); err != nil {
+			t.Fatalf("write body for %s: %v", cc, err)
 		}
 	}
 
-	for name, lines := range files {
-		body := strings.Join(lines, "\n")
+	for name, body := range extra {
 		hdr := &tar.Header{
-			Name: name,
+			Name: prefix + name,
 			Size: int64(len(body)),
 			Mode: 0644,
 		}
@@ -477,4 +552,46 @@ func makeTarGzWithDir(t *testing.T, dir string, files map[string][]string) []byt
 	}
 
 	return buf.Bytes()
+}
+
+func makeIPverseTarGzWithCustom(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+
+	prefix := "pack-bbb222/"
+	for name, body := range files {
+		hdr := &tar.Header{
+			Name: prefix + name,
+			Size: int64(len(body)),
+			Mode: 0644,
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("write header for %s: %v", name, err)
+		}
+		if _, err := tw.Write([]byte(body)); err != nil {
+			t.Fatalf("write body for %s: %v", name, err)
+		}
+	}
+
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar writer: %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatalf("close gzip writer: %v", err)
+	}
+
+	return buf.Bytes()
+}
+
+func stringSliceToJSON(s []string) string {
+	if s == nil {
+		return "[]"
+	}
+	quoted := make([]string, len(s))
+	for i, v := range s {
+		quoted[i] = fmt.Sprintf(`"%s"`, v)
+	}
+	return "[" + strings.Join(quoted, ",") + "]"
 }
