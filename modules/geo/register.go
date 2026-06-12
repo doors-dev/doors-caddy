@@ -14,5 +14,5 @@ func Register() {
 		err := m.UnmarshalCaddyfile(h.Dispenser)
 		return &m, err
 	})
-	httpcaddyfile.RegisterDirectiveOrder(common.DirectiveGeo, httpcaddyfile.Before, common.DirectiveHandler)
+	httpcaddyfile.RegisterDirectiveOrder(common.DirectiveGeo, httpcaddyfile.Before, "reverse_proxy")
 }
