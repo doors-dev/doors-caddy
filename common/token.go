@@ -1,4 +1,4 @@
-package lib
+package common
 
 import (
 	"crypto/aes"
@@ -8,10 +8,6 @@ import (
 	"fmt"
 	"net/netip"
 )
-
-func ErrorsJoin(mainError error, specificError error) error {
-	return fmt.Errorf("%w: %w", mainError, specificError)
-}
 
 var ErrorBase64 = errors.New("base64 decode error")
 var ErrorCipher = errors.New("cipher decrypt error")

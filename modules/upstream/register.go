@@ -4,6 +4,8 @@ import (
 	"github.com/caddyserver/caddy/v2"
 )
 
-func init() {
+const Directive = "doors_upstream"
+
+func Register() {
 	caddy.RegisterModule(Module{})
 }

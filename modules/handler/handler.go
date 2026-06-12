@@ -1,4 +1,4 @@
-package upstream
+package handler
 
 import (
 	"errors"
@@ -6,50 +6,29 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp/reverseproxy"
-	"github.com/doors-dev/doors-caddy/lib"
+	"github.com/doors-dev/doors-caddy/common"
 	"go.uber.org/zap"
 )
 
 var errorDecode = errors.New("failed to decode dynamic upstream: stale client, wrong configuration or attack")
 var errorCIDR = errors.New("upstream failed CIDR match: stale client, wrong configureation or attack")
 
-func (m *Module) GetUpstreams(r *http.Request) ([]*reverseproxy.Upstream, error) {
+func (m Module) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	token, ok := tokenFromPath(r.URL.Path)
 	if !ok {
-		return m.defaultUpstream(r)
+		m.setCommonUpstreams(r)
+		return next.ServeHTTP(w, r)
 	}
-	ip, err := m.cipher.Decode(token)
-	if err != nil {
-		return nil, lib.ErrorsJoin(errorDecode, err)
+	if !m.setSystemUpstreams(token, r) {
+		w.WriteHeader(http.StatusGone)
+		return nil
 	}
-	var reverseUpstream *reverseproxy.Upstream
-	for _, upstream := range m.Upstreams {
-		if !upstream.prefix.Contains(ip) {
-			continue
-		}
-		reverseUpstream = &reverseproxy.Upstream{
-			Dial: net.JoinHostPort(
-				ip.String(),
-				strconv.Itoa(upstream.Port),
-			),
-		}
-	}
-	if reverseUpstream == nil {
-		return nil, errorCIDR
-	}
-	return []*reverseproxy.Upstream{reverseUpstream}, nil
-
+	return next.ServeHTTP(w, r)
 }
 
-func (m *Module) defaultUpstream(r *http.Request) ([]*reverseproxy.Upstream, error) {
-	if len(m.Upstreams) == 1 {
-		return m.upstreams, nil
-	}
-	token, ok := tokenFromCookie(m.CookieName, r)
-	if !ok {
-		return m.upstreams, nil
-	}
+func (m *Module) setSystemUpstreams(token string, r *http.Request) bool {
 	ip, err := m.cipher.Decode(token)
 	if err != nil {
 		m.logger.Warn(errorCIDR.Error(),
@@ -59,19 +38,57 @@ func (m *Module) defaultUpstream(r *http.Request) ([]*reverseproxy.Upstream, err
 			zap.String("host", r.Host),
 			zap.String("remote_addr", r.RemoteAddr),
 		)
-		return m.upstreams, nil
+		return false
 	}
 	for _, upstream := range m.Upstreams {
-		if upstream.prefix.Contains(ip) {
-			return upstream.upstreams, nil
+		if !upstream.prefix.Contains(ip) {
+			continue
 		}
+		common.SetUpstreams(r, []*reverseproxy.Upstream{{
+			Dial: net.JoinHostPort(
+				ip.String(),
+				strconv.Itoa(upstream.Port),
+			),
+		}})
+		return true
+	}
+	return false
+}
+
+func (m *Module) setCommonUpstreams(r *http.Request) {
+	if len(m.Upstreams) == 1 {
+		common.SetUpstreams(r, m.upstreams)
+		return
+	}
+	token, ok := tokenFromCookie(m.CookieName, r)
+	if !ok {
+		common.SetUpstreams(r, m.upstreams)
+		return
+	}
+	ip, err := m.cipher.Decode(token)
+	if err != nil {
+		m.logger.Warn(errorDecode.Error(),
+			zap.Error(err),
+			zap.String("method", r.Method),
+			zap.String("path", r.URL.Path),
+			zap.String("host", r.Host),
+			zap.String("remote_addr", r.RemoteAddr),
+		)
+		common.SetUpstreams(r, m.upstreams)
+		return
+	}
+	for _, upstream := range m.Upstreams {
+		if !upstream.prefix.Contains(ip) {
+			continue
+		}
+		common.SetUpstreams(r, upstream.upstreams)
+		return
 	}
 	m.logger.Warn(errorCIDR.Error(),
-		zap.Error(err),
 		zap.String("method", r.Method),
 		zap.String("path", r.URL.Path),
 		zap.String("host", r.Host),
 		zap.String("remote_addr", r.RemoteAddr),
 	)
-	return m.upstreams, nil
+	common.SetUpstreams(r, m.upstreams)
 }

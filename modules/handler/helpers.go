@@ -1,4 +1,4 @@
-package upstream
+package handler
 
 import (
 	"net/http"

@@ -1,13 +1,13 @@
 package doorscaddy
 
-import "github.com/doors-dev/doors-caddy/lib"
+import "github.com/doors-dev/doors-caddy/common"
 
-var ErrorBase64 = lib.ErrorBase64
-var ErrorCipher = lib.ErrorCipher
-var ErrorParse = lib.ErrorParse
+var ErrorBase64 = common.ErrorBase64
+var ErrorCipher = common.ErrorCipher
+var ErrorParse = common.ErrorParse
 
-type TokenCipher = lib.TokenCipher
+type TokenCipher = common.TokenCipher
 
 func NewTokenCipher(secret string) (TokenCipher, error) {
-	return lib.NewTokenCipher(secret)
+	return common.NewTokenCipher(secret)
 }
