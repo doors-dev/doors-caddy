@@ -4,12 +4,16 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strings"
 
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"go.uber.org/zap"
 )
 
 func (m Module) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
+	if strings.HasPrefix(r.URL.Path, "/.well-known/acme-challenge/") {
+		return next.ServeHTTP(w, r)
+	}
 	ip, err := clientIP(r)
 	if err != nil {
 		m.logger.Error("failed to get client IP",
