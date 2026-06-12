@@ -85,7 +85,7 @@ func (m *Module) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if _, exists := m.Redirects[domain]; exists {
 					return d.Errf("duplicate domain block: %s", domain)
 				}
-				for d.NextBlock(d.Nesting()) {
+				for nesting := d.Nesting(); d.NextBlock(nesting); {
 					codes := append([]string{d.Val()}, d.RemainingArgs()...)
 					for _, code := range codes {
 						code = strings.ToUpper(strings.TrimSpace(code))
