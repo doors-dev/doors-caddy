@@ -11,6 +11,7 @@ import (
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp/reverseproxy"
 	"github.com/doors-dev/doors-caddy/common"
+	"github.com/doors-dev/doors-caddy/lib"
 	"go.uber.org/zap"
 )
 
@@ -18,7 +19,7 @@ type Module struct {
 	Secret     string     `json:"secret,omitempty"`
 	CookieName string     `json:"cookie_name,omitempty"`
 	Upstreams  []Upstream `json:"upstreams,omitempty"`
-	cipher     common.TokenCipher
+	cipher     lib.TokenCipher
 	upstreams  []*reverseproxy.Upstream
 	logger     *zap.Logger
 }
@@ -79,7 +80,7 @@ func (m *Module) Provision(ctx caddy.Context) (err error) {
 		upstream.upstreams = []*reverseproxy.Upstream{reverseUpstream}
 		m.upstreams = append(m.upstreams, reverseUpstream)
 	}
-	m.cipher, err = common.NewTokenCipher(m.Secret)
+	m.cipher, err = lib.NewTokenCipher(m.Secret)
 	return err
 }
 

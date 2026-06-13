@@ -17,7 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/doors-dev/doors-caddy/common"
+	"github.com/doors-dev/doors-caddy/lib"
 	"github.com/gaissmai/bart"
 	"go.uber.org/zap"
 )
@@ -217,7 +217,7 @@ func (u *updater) update() error {
 			zap.Int("status", resp.StatusCode),
 			zap.String("status_text", resp.Status),
 		)
-		return common.ErrorsJoin(errorRequest, fmt.Errorf("HTTP %s", resp.Status))
+		return lib.ErrorsJoin(errorRequest, fmt.Errorf("HTTP %s", resp.Status))
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize))
 	if err != nil {
@@ -225,7 +225,7 @@ func (u *updater) update() error {
 			zap.String("tarball_url", u.TarballURL),
 			zap.Error(err),
 		)
-		return common.ErrorsJoin(errorRequest, err)
+		return lib.ErrorsJoin(errorRequest, err)
 	}
 
 	u.Logger.Debug("geo updater: database downloaded",
@@ -240,7 +240,7 @@ func (u *updater) update() error {
 			zap.String("tarball_url", u.TarballURL),
 			zap.Error(err),
 		)
-		return common.ErrorsJoin(errorParse, err)
+		return lib.ErrorsJoin(errorParse, err)
 	}
 	u.V4.Store(v4)
 	u.V6.Store(v6)

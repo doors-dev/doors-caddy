@@ -1,8 +1,6 @@
-package common
+package lib
 
-import (
-	"fmt"
-)
+import "fmt"
 
 func ErrorsJoin(mainError error, specificError error) error {
 	return fmt.Errorf("%w: %w", mainError, specificError)
