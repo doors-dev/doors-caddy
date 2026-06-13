@@ -86,7 +86,7 @@ example.com {
         }
     }
     reverse_proxy {
-        dynamic_upstreams doors_upstreams
+        dynamic doors_upstreams
     }
 }
 ```
@@ -166,9 +166,7 @@ func main() {
 
     app := doors.NewApp(page,
         doors.WithID(token),
-        doors.WithConf(doors.Conf{
-            ServerIDCookieName: "upstream",
-        }),
+        doors.WithIDCookie("upstream"),
     )
 
     server := &http.Server{Addr: ":8080", Handler: app}
@@ -190,7 +188,7 @@ func main() {
 - Doors system paths become `/~/<token>/...` — caddy decrypts the token
   from the URL.
 - The session cookie is named `<token>`.
-- `ServerIDCookieName: "upstream"` sets an additional cookie with
+- `doors.WithIDCookie("upstream")` sets an additional cookie with
   name `upstream` and value `<token>`. Caddy reads it for server
   affinity.
 
