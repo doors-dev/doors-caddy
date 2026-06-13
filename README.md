@@ -1,5 +1,3 @@
-> Work in progress — not yet ready for production use.
-
 # doors-caddy
 
 Caddy v2 modules for [Doors](https://github.com/doors-dev/doors) apps:
@@ -99,7 +97,7 @@ example.com {
   - `host` — DNS name resolving to the fresh deployment (required).
   - `upstream_port` — Port the Doors app listens on (required).
 
-For horizontal scaling, add more `upstream` blocks in `doors_handler`:
+For horizontal scaling, add more `upstream` blocks in `doors_handler` to balance load across multiple nodes. Each node must have a non-overlapping CIDR (e.g. `10.42.1.0/24` and `10.42.2.0/24`):
 
 ```
 upstream {
@@ -257,9 +255,10 @@ load-balancing policy selects one.
 
 ## Geo-IP redirects
 
-`doors_geo` downloads regularly-updated IP-address-to-country databases in the
-background and issues 307 (Temporary Redirect) responses when the visitor's
-country matches a configured domain.
+`doors_geo` gives users the best experience by redirecting them to the
+closest server based on their IP address. It downloads regularly-updated
+IP-address-to-country databases in the background and issues 307 (Temporary
+Redirect) responses when the visitor's country matches a configured domain.
 
 ### Database updates
 
